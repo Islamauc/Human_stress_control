@@ -3,9 +3,9 @@
 <title>Static Call Graph - [Phase1Project\Phase1Project.axf]</title></head>
 <body><HR>
 <H1>Static Call Graph for image Phase1Project\Phase1Project.axf</H1><HR>
-<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 6240002: Last Updated: Sun May  3 00:30:41 2026
+<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 6240002: Last Updated: Sun May  3 02:15:37 2026
 <BR><P>
-<H3>Maximum Stack Usage =        904 bytes + Unknown(Functions without stacksize, Cycles, Untraceable Function Pointers)</H3><H3>
+<H3>Maximum Stack Usage =        896 bytes + Unknown(Functions without stacksize, Cycles, Untraceable Function Pointers)</H3><H3>
 Call chain for Maximum Stack Depth:</H3>
 __rt_entry_main &rArr; main &rArr; i2c_scan &rArr; __2snprintf &rArr; _printf_char_common &rArr; __printf
 <P>
@@ -270,7 +270,7 @@ Global Symbols
 <P><STRONG><a name="[10e]"></a>__rt_entry_postsh_1</STRONG> (Thumb, 0 bytes, Stack size unknown bytes, __rtentry2.o(.ARM.Collect$$rtentry$$00000009))
 
 <P><STRONG><a name="[66]"></a>__rt_entry_main</STRONG> (Thumb, 0 bytes, Stack size unknown bytes, __rtentry2.o(.ARM.Collect$$rtentry$$0000000D))
-<BR><BR>[Stack]<UL><LI>Max Depth = 904 + Unknown Stack Size
+<BR><BR>[Stack]<UL><LI>Max Depth = 896 + Unknown Stack Size
 <LI>Call Chain = __rt_entry_main &rArr; main &rArr; i2c_scan &rArr; __2snprintf &rArr; _printf_char_common &rArr; __printf
 </UL>
 <BR>[Calls]<UL><LI><a href="#[67]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;main
@@ -1175,7 +1175,7 @@ Global Symbols
 </UL>
 <BR>[Address Reference Count : 1]<UL><LI> startup_stm32l432xx.o(RESET)
 </UL>
-<P><STRONG><a name="[b9]"></a>display_update</STRONG> (Thumb, 372 bytes, Stack size 64 bytes, display.o(.text.display_update))
+<P><STRONG><a name="[b9]"></a>display_update</STRONG> (Thumb, 332 bytes, Stack size 64 bytes, display.o(.text.display_update))
 <BR><BR>[Stack]<UL><LI>Max Depth = 216 + Unknown Stack Size
 <LI>Call Chain = display_update &rArr; u8g2_DrawStr &rArr; u8g2_draw_string &rArr; u8g2_font_decode_glyph &rArr; u8g2_DrawHVLine
 </UL>
@@ -1190,8 +1190,8 @@ Global Symbols
 <BR>[Called By]<UL><LI><a href="#[67]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;main
 </UL>
 
-<P><STRONG><a name="[67]"></a>main</STRONG> (Thumb, 2996 bytes, Stack size 656 bytes, main.o(.text.main))
-<BR><BR>[Stack]<UL><LI>Max Depth = 904 + Unknown Stack Size
+<P><STRONG><a name="[67]"></a>main</STRONG> (Thumb, 2964 bytes, Stack size 648 bytes, main.o(.text.main))
+<BR><BR>[Stack]<UL><LI>Max Depth = 896 + Unknown Stack Size
 <LI>Call Chain = main &rArr; i2c_scan &rArr; __2snprintf &rArr; _printf_char_common &rArr; __printf
 </UL>
 <BR>[Calls]<UL><LI><a href="#[84]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GetTick

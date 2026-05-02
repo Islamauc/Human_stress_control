@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include "display.h"
 
-/* helpers declared before use */
 static int32_t clamp(int32_t val, int32_t min_val, int32_t max_val)
 {
     if (val < min_val) return min_val;
@@ -28,31 +27,30 @@ void display_update(u8g2_t *g, uint8_t hr, uint8_t spo2,
                     uint8_t si, int32_t *wave)
 {
     char str[24];
+    (void)spo2;   /* not displayed — hardcoded value is not meaningful */
 
     u8g2_ClearBuffer(g);
 
-    /* ---- Line 1: HR and SpO2 ---- */
+    /* ---- Line 1: HR + STATUS (matches Tera Term STATE label) ---- */
     u8g2_SetFont(g, u8g2_font_ncenB08_tr);
-    snprintf(str, sizeof(str), "HR:%d bpm  O2:%d%%", hr, spo2);
+    snprintf(str, sizeof(str), "HR: %d BPM", hr);
     u8g2_DrawStr(g, 0, 10, str);
 
-    /* ---- Line 2: Stress ---- */
-    u8g2_SetFont(g, u8g2_font_ncenB10_tr);
-    if (si == 0)
-        snprintf(str, sizeof(str), "STRESS: RELAXED");
-    else if (si < 30)
-        snprintf(str, sizeof(str), "STRESS: LOW %d", si);
-    else if (si < 60)
-        snprintf(str, sizeof(str), "STRESS: MED %d", si);
-    else
-        snprintf(str, sizeof(str), "STRESS: HIGH %d", si);
-    u8g2_DrawStr(g, 0, 24, str);
+    /* ---- Line 2: STRESS value + STATE label ---- */
+    u8g2_SetFont(g, u8g2_font_ncenB08_tr);
+    const char *state;
+    if      (si > 70) state = "HIGH STRESS";
+    else if (si > 40) state = "MEDIUM";
+    else if (si > 20) state = "RELAXED";
+    else              state = "VERY RELAXED";
+    snprintf(str, sizeof(str), "STR:%d %s", si, state);
+    u8g2_DrawStr(g, 0, 22, str);
 
     /* ---- Separator ---- */
-    u8g2_DrawHLine(g, 0, 27, 128);
+    u8g2_DrawHLine(g, 0, 25, 128);
 
-    /* ---- Waveform zone: y=29..63 ---- */
-#define WAVE_TOP  29
+    /* ---- Waveform zone: y=27..63 ---- */
+#define WAVE_TOP  27
 #define WAVE_BOT  63
 #define WAVE_H    (WAVE_BOT - WAVE_TOP)
 #define WAVE_LEN  128
@@ -75,7 +73,7 @@ void display_update(u8g2_t *g, uint8_t hr, uint8_t spo2,
         int32_t mid = (WAVE_TOP + WAVE_BOT) / 2;
         u8g2_DrawHLine(g, 0, (uint8_t)mid, 128);
         u8g2_SetFont(g, u8g2_font_ncenB08_tr);
-        u8g2_DrawStr(g, 24, (uint8_t)(mid + 8), "No Signal");
+        u8g2_DrawStr(g, 10, (uint8_t)(mid + 8), "CALCULATING...");
     }
 
     u8g2_SendBuffer(g);

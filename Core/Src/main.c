@@ -277,12 +277,10 @@ if (now - t_hrv >= 5000)
         if (now - dbg_status_timer >= 2000)
         {
             dbg_status_timer = now;
-            DBG("ST| MAX:%s IR:%ld OK:%u E:%u Er:%u B:%u\r\n",
+DBG("ST| MAX:%s IR:%ld OK:%u B:%u\r\n",
                 max_ok ? "OK" : "FAIL",
                 (long)last_ir,
                 (unsigned int)dbg_fifo_reads,
-                (unsigned int)dbg_fifo_empty,
-                (unsigned int)dbg_fifo_errors,
                 (unsigned int)dbg_beat_count);
             HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
         }
