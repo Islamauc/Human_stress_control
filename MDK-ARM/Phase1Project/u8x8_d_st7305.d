@@ -1,0 +1,2 @@
+phase1project/u8x8_d_st7305.o: ..\Drivers\U8g2\u8x8_d_st7305.c \
+  ..\Drivers\U8g2\u8x8.h
