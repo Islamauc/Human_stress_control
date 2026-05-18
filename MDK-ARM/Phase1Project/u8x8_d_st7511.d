@@ -1,2 +1,0 @@
-phase1project/u8x8_d_st7511.o: ..\Drivers\U8g2\u8x8_d_st7511.c \
-  ..\Drivers\U8g2\u8x8.h

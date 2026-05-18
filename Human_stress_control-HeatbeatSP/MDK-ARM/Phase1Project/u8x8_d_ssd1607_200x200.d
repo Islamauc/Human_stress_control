@@ -1,0 +1,2 @@
+phase1project/u8x8_d_ssd1607_200x200.o: \
+  ..\Drivers\U8g2\u8x8_d_ssd1607_200x200.c ..\Drivers\U8g2\u8x8.h
