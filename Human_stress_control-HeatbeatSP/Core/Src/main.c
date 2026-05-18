@@ -89,16 +89,6 @@ static int32_t  ppg_min       = 0;
 static int32_t  ppg_max       = 0;
 static uint8_t recalibrate_peaks = 0;
 
-static uint32_t last_beat_time = 0;
-static int32_t dc_estimate = 0;
-static int32_t prev_filtered = 0;
-static int32_t derivative = 0;
-static int32_t prev_derivative = 0;
-
-#define REFRACTORY_MS 300
-
-
-
 uint32_t t_fifo = 0;
 uint32_t t_hrv  = 0;
 uint32_t t_disp = 0;
@@ -447,7 +437,7 @@ int main(void)
                 dbg_fifo_reads++;
                 last_ir = (int32_t)i_v;
 
-                if (i_v < FINGER_THRESHOLD) {
+                if (i_v < 20000) {
                     if (finger_detected == 1) {
                         DBG("FINGER REMOVED\r\n");
                         finger_detected = 0;
@@ -460,10 +450,6 @@ int main(void)
                         wave_idx = 0;
                         memset(wave_buf, 0, sizeof(wave_buf));
 											  recalibrate_peaks = 1;
-												prev_filtered   = 0;
-												derivative      = 0;
-												prev_derivative = 0;
-												last_beat_time  = 0;
                     }
                 }
 
@@ -472,8 +458,6 @@ int main(void)
 
                 int32_t flt = process_ppg_signal((int32_t)i_v);
                 flt = -flt;
-								derivative = flt - prev_filtered;
-								prev_filtered = flt;
 								
 								if (recalibrate_peaks) {
 									ppg_max = flt;
@@ -499,39 +483,27 @@ int main(void)
                 int32_t range     = ppg_max - ppg_min;
                 int32_t threshold = ppg_min + (range * 7 / 10);
 
-                int32_t dynamic_threshold = ppg_min + (range * 3 / 5);
+                if (ppg_prev2 < ppg_prev &&
+                    ppg_prev  > flt       &&
+                    ppg_prev  > threshold &&
+                    ppg_prev  > 0         &&
+                    range     > 200)
+                {
+                    uint32_t gap_ms = now - last_peak_ms;
 
-uint32_t gap_ms = now - last_beat_time;
-
-if (
-    prev_derivative > 0 &&
-    derivative <= 0 &&
-    flt > dynamic_threshold &&
-    range > 150 &&
-    gap_ms > REFRACTORY_MS
-)
-{
-    if (last_beat_time != 0)
-    {
-        uint32_t rr = gap_ms;
-
-        if (rr >= 300 && rr <= 2000)
-        {
-            uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
-            HRV_OnBeat(&hrv, ts);
-            live_bpm = 60000UL / rr;
-
-            dbg_beat_count++;
-            DBG("RR=%lu ms BPM=%lu\r\n",
-                rr,
-                live_bpm);
-        }
-    }
-
-    last_beat_time = now;
-}
-
-prev_derivative = derivative;
+                    if (last_peak_ms == 0) {
+                        last_peak_ms = now;
+                    } else if (gap_ms >= 550 && gap_ms <= 2000) {
+                        uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
+                        HRV_OnBeat(&hrv, ts);
+												live_bpm = 60000UL / gap_ms;
+                        dbg_beat_count++;
+                        DBG("BEAT %u bpm\r\n", (unsigned int)(60000UL / gap_ms));
+                        last_peak_ms = now;
+                    } else if (gap_ms > 2000) {
+                        last_peak_ms = now;
+                    }
+                }
 
                 ppg_prev2 = ppg_prev;
                 ppg_prev  = flt;

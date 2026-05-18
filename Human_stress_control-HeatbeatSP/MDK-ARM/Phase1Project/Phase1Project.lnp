@@ -158,7 +158,7 @@
 "phase1project\u8g2_d_memory.o"
 "phase1project\u8g2_d_setup.o"
 "phase1project\u8g2_font.o"
---strict --scatter "Phase1Project\Phase1Project.sct"
+--library_type=microlib --strict --scatter "Phase1Project\Phase1Project.sct"
 --summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
 --info sizes --info totals --info unused --info veneers
 --list "Phase1Project.map" -o Phase1Project\Phase1Project.axf
