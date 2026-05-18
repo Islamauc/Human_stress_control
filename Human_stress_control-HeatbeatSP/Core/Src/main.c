@@ -36,7 +36,27 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define BUZZER_FREQ(f)  do { \
+    __HAL_TIM_SET_AUTORELOAD(&htim16, (80000000UL / (79+1)) / (f) - 1); \
+    __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, \
+    (__HAL_TIM_GET_AUTORELOAD(&htim16) + 1) / 2); \
+} while(0)
 
+#define BUZZER_STOP()   HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1)
+#define BUZZER_START()  HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1)
+// The musical notes
+#define NOTE_C4   262
+#define NOTE_D4   294
+#define NOTE_E4   330
+#define NOTE_F4   349
+#define NOTE_G4   392
+#define NOTE_A4   440
+#define NOTE_B4   494
+#define NOTE_C5   523
+#define NOTE_D5   587
+#define NOTE_E5   659
+#define NOTE_G4_  415  
+#define NOTE_A4_  466  
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,7 +69,10 @@ I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c3;
 DMA_HandleTypeDef hdma_i2c1_rx;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim6;
+TIM_HandleTypeDef htim16;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
@@ -64,6 +87,18 @@ static int32_t  ppg_prev2     = 0;
 static uint32_t last_peak_ms  = 0;
 static int32_t  ppg_min       = 0;
 static int32_t  ppg_max       = 0;
+static uint8_t recalibrate_peaks = 0;
+
+static uint32_t last_beat_time = 0;
+static int32_t dc_estimate = 0;
+static int32_t prev_filtered = 0;
+static int32_t derivative = 0;
+static int32_t prev_derivative = 0;
+
+#define REFRACTORY_MS 300
+
+
+
 uint32_t t_fifo = 0;
 uint32_t t_hrv  = 0;
 uint32_t t_disp = 0;
@@ -90,6 +125,28 @@ static BreathState_t breath_state = BREATH_IDLE;
 static uint32_t breath_timer = 0;
 static uint8_t  breath_radius = 8;
 static uint8_t finger_detected = 0;
+
+static uint32_t buzzer_timer    = 0;
+static uint8_t  buzzer_active   = 0;
+static uint32_t buzzer_duration = 0;
+static BreathState_t prev_breath_state = BREATH_IDLE;
+static const uint16_t calm_melody[][2] = {
+    {NOTE_C4, 1200}, {NOTE_E4, 1200}, {NOTE_G4, 1200},
+    {NOTE_A4, 1600}, {0,        400}, 
+    {NOTE_G4, 1200}, {NOTE_E4, 1200}, {NOTE_D4, 1200},
+    {NOTE_C4, 2000}, {0,        600},
+    {NOTE_E4, 1200}, {NOTE_G4, 1200}, {NOTE_A4, 1200},
+    {NOTE_C5, 2000}, {0,        600},
+    {NOTE_A4, 1200}, {NOTE_G4, 1200}, {NOTE_E4, 1200},
+    {NOTE_C4, 2400}, {0,       1000}
+};
+#define MELODY_LEN (sizeof(calm_melody) / sizeof(calm_melody[0]))
+
+static uint8_t  melody_note_idx  = 0;
+static uint32_t melody_note_time = 0;
+static uint8_t  melody_playing   = 0;
+static uint32_t dbg_status_timer = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -101,6 +158,9 @@ static void MX_USART2_UART_Init(void);
 static void MX_I2C3_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_TIM6_Init(void);
+static void MX_TIM16_Init(void);
 /* USER CODE BEGIN PFP */
 uint8_t u8x8_byte_stm32_hw_i2c(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_gpio_delay_stm32(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
@@ -223,6 +283,50 @@ void draw_breathing(u8g2_t *u8g2)
 }
 static uint32_t last_read_count = 0;
 static uint32_t last_read_time  = 0;
+
+void Music_Start(void)
+{
+    melody_playing   = 1;
+    melody_note_idx  = 0;
+    melody_note_time = HAL_GetTick();
+
+    if (calm_melody[0][0] == 0) {
+        BUZZER_STOP();
+    } else {
+        BUZZER_FREQ(calm_melody[0][0]);
+        BUZZER_START();
+    }
+    DBG("MUSIC START\r\n");
+}
+
+void Music_Stop(void)
+{
+    melody_playing = 0;
+    BUZZER_STOP();
+    DBG("MUSIC STOP\r\n");
+}
+
+void Music_Update(uint32_t now)
+{
+    if (!melody_playing) return;
+
+    uint32_t duration = calm_melody[melody_note_idx][1];
+
+    if (now - melody_note_time >= duration)
+    {
+        melody_note_idx = (melody_note_idx + 1) % MELODY_LEN;
+        melody_note_time = now;
+
+        uint16_t freq = calm_melody[melody_note_idx][0];
+
+        if (freq == 0) {
+            BUZZER_STOP();  
+        } else {
+            BUZZER_FREQ(freq);
+            BUZZER_START();
+        }
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -260,6 +364,9 @@ int main(void)
   MX_I2C3_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
+  MX_TIM1_Init();
+  MX_TIM6_Init();
+  MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
   HAL_Delay(10);
 
@@ -305,17 +412,20 @@ int main(void)
 
   stage("HRV");
   memset(&hrv, 0, sizeof(hrv));
-
-  uint32_t dbg_status_timer = HAL_GetTick();
+	
+		stage("TIM16 PWM");
+		HAL_TIM_Base_Start(&htim16);
+		BUZZER_STOP();
+		DBG("BUZZER OK\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    uint32_t now = HAL_GetTick();
 
-    /* FIFO Poll - every 10ms */
+    uint32_t now = HAL_GetTick();
+		Music_Update(now);
     if (now - t_fifo >= 10)
     {
         t_fifo = now;
@@ -337,7 +447,7 @@ int main(void)
                 dbg_fifo_reads++;
                 last_ir = (int32_t)i_v;
 
-                if (i_v < 20000) {
+                if (i_v < FINGER_THRESHOLD) {
                     if (finger_detected == 1) {
                         DBG("FINGER REMOVED\r\n");
                         finger_detected = 0;
@@ -349,6 +459,11 @@ int main(void)
                         memset(&hrv, 0, sizeof(hrv));
                         wave_idx = 0;
                         memset(wave_buf, 0, sizeof(wave_buf));
+											  recalibrate_peaks = 1;
+												prev_filtered   = 0;
+												derivative      = 0;
+												prev_derivative = 0;
+												last_beat_time  = 0;
                     }
                 }
 
@@ -357,6 +472,17 @@ int main(void)
 
                 int32_t flt = process_ppg_signal((int32_t)i_v);
                 flt = -flt;
+								derivative = flt - prev_filtered;
+								prev_filtered = flt;
+								
+								if (recalibrate_peaks) {
+									ppg_max = flt;
+									ppg_min = flt;
+									ppg_prev = flt;
+									ppg_prev2 = flt;
+									last_peak_ms = now;
+									recalibrate_peaks = 0; 
+							}
                 wave_buf[wave_idx % 128] = flt;
                 wave_idx++;
 
@@ -373,27 +499,39 @@ int main(void)
                 int32_t range     = ppg_max - ppg_min;
                 int32_t threshold = ppg_min + (range * 7 / 10);
 
-                if (ppg_prev2 < ppg_prev &&
-                    ppg_prev  > flt       &&
-                    ppg_prev  > threshold &&
-                    ppg_prev  > 0         &&
-                    range     > 200)
-                {
-                    uint32_t gap_ms = now - last_peak_ms;
+                int32_t dynamic_threshold = ppg_min + (range * 3 / 5);
 
-                    if (last_peak_ms == 0) {
-                        last_peak_ms = now;
-                    } else if (gap_ms >= 550 && gap_ms <= 2000) {
-                        uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
-                        HRV_OnBeat(&hrv, ts);
-												live_bpm = 60000UL / gap_ms;
-                        dbg_beat_count++;
-                        DBG("BEAT %u bpm\r\n", (unsigned int)(60000UL / gap_ms));
-                        last_peak_ms = now;
-                    } else if (gap_ms > 2000) {
-                        last_peak_ms = now;
-                    }
-                }
+uint32_t gap_ms = now - last_beat_time;
+
+if (
+    prev_derivative > 0 &&
+    derivative <= 0 &&
+    flt > dynamic_threshold &&
+    range > 150 &&
+    gap_ms > REFRACTORY_MS
+)
+{
+    if (last_beat_time != 0)
+    {
+        uint32_t rr = gap_ms;
+
+        if (rr >= 300 && rr <= 2000)
+        {
+            uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
+            HRV_OnBeat(&hrv, ts);
+            live_bpm = 60000UL / rr;
+
+            dbg_beat_count++;
+            DBG("RR=%lu ms BPM=%lu\r\n",
+                rr,
+                live_bpm);
+        }
+    }
+
+    last_beat_time = now;
+}
+
+prev_derivative = derivative;
 
                 ppg_prev2 = ppg_prev;
                 ppg_prev  = flt;
@@ -450,10 +588,10 @@ int main(void)
         }
     }
 
-    if (now - t_disp >= 80)
+if (now - t_disp >= 80)
     {
         t_disp = now;
-
+                        
         if (!finger_detected)
         {
             u8g2_ClearBuffer(&u8g2);
@@ -461,14 +599,35 @@ int main(void)
             u8g2_DrawStr(&u8g2, 15, 30, "PLACE FINGER");
             u8g2_DrawFrame(&u8g2, 0, 0, 128, 64);
             u8g2_SendBuffer(&u8g2);
+            
+            if (melody_playing) Music_Stop();
+            prev_breath_state = BREATH_IDLE;
+        }
+        else if (!hrv.valid)
+        {
+            u8g2_ClearBuffer(&u8g2);
+            u8g2_SetFont(&u8g2, u8g2_font_ncenB08_tr);
+            u8g2_DrawStr(&u8g2, 15, 25, "ANALYZING...");
+            u8g2_DrawStr(&u8g2, 15, 45, "Keep Still...");
+            u8g2_SendBuffer(&u8g2);
+            
+            if (melody_playing) Music_Stop();
+            prev_breath_state = BREATH_IDLE;
         }
         else if (hrv.stress_index > 70)
         {
             Breathing_Update(now, hrv.stress_index);
             draw_breathing(&u8g2);
+            if (breath_state == BREATH_INHALE && prev_breath_state != BREATH_INHALE) {
+                if (!melody_playing) Music_Start();
+            }
+            prev_breath_state = breath_state;
         }
         else
         {
+            if (melody_playing) Music_Stop();
+            prev_breath_state = BREATH_IDLE;
+            
             int32_t render[128];
             for (int i = 0; i < 128; i++)
                 render[i] = wave_buf[(wave_idx + i) % 128];
@@ -480,26 +639,8 @@ int main(void)
                            render);
         }
     }
-
-    if (now - dbg_status_timer >= 2000)
-    {
-        dbg_status_timer = now;
-
-        uint32_t display_bpm = finger_detected ? hrv.hr_bpm : 0;
-
-        DBG("ST| MAX:%s BPM:%u Finger:%s IR:%ld\r\n",
-            max_ok ? "OK" : "FAIL",
-            (unsigned int)display_bpm,
-            finger_detected ? "YES" : "NO",
-            (long)last_ir);
-
-        HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-    }
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
-  }
   /* USER CODE END 3 */
+	}
 }
 
 /**
@@ -659,6 +800,53 @@ static void MX_I2C3_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -672,6 +860,7 @@ static void MX_TIM2_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
@@ -691,15 +880,128 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 0;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 65535;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
+  * @brief TIM16 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM16_Init(void)
+{
+
+  /* USER CODE BEGIN TIM16_Init 0 */
+
+  /* USER CODE END TIM16_Init 0 */
+
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM16_Init 1 */
+
+  /* USER CODE END TIM16_Init 1 */
+  htim16.Instance = TIM16;
+  htim16.Init.Prescaler = 79;
+  htim16.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim16.Init.Period = 65535;
+  htim16.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim16.Init.RepetitionCounter = 0;
+  htim16.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim16, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim16, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM16_Init 2 */
+
+  /* USER CODE END TIM16_Init 2 */
+  HAL_TIM_MspPostInit(&htim16);
 
 }
 
