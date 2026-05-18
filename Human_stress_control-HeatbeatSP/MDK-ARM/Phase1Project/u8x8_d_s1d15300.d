@@ -1,0 +1,2 @@
+phase1project/u8x8_d_s1d15300.o: ..\Drivers\U8g2\u8x8_d_s1d15300.c \
+  ..\Drivers\U8g2\u8x8.h

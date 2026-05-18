@@ -1,0 +1,3 @@
+phase1project/u8x8_d_st7586s_erc240160.o: \
+  ..\Drivers\U8g2\u8x8_d_st7586s_erc240160.c ..\Drivers\U8g2\u8g2.h \
+  ..\Drivers\U8g2\u8x8.h

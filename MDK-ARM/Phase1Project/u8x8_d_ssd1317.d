@@ -1,2 +1,0 @@
-phase1project/u8x8_d_ssd1317.o: ..\Drivers\U8g2\u8x8_d_ssd1317.c \
-  ..\Drivers\U8g2\u8x8.h
