@@ -2,6 +2,129 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+enum StressWindow {
+  lastMinute,
+  last5Minutes,
+  last15Minutes,
+  allData,
+}
+
+class StressSample {
+  StressSample({
+    required this.timestamp,
+    required this.bpm,
+    required this.stress,
+    required this.fingerOnSensor,
+  });
+
+  final DateTime timestamp;
+  final int bpm;
+  final int stress;
+  final bool fingerOnSensor;
+}
+
+class StressSummary {
+  StressSummary({
+    required this.window,
+    required this.sampleCount,
+    required this.averageBpm,
+    required this.averageStress,
+    required this.minStress,
+    required this.maxStress,
+    required this.trend,
+  });
+
+  final StressWindow window;
+  final int sampleCount;
+  final double averageBpm;
+  final double averageStress;
+  final int minStress;
+  final int maxStress;
+  final String trend;
+}
+
+String stressWindowLabel(StressWindow window) {
+  switch (window) {
+    case StressWindow.lastMinute:
+      return 'Last 1 min';
+    case StressWindow.last5Minutes:
+      return 'Last 5 min';
+    case StressWindow.last15Minutes:
+      return 'Last 15 min';
+    case StressWindow.allData:
+      return 'All data';
+  }
+}
+
+Duration? stressWindowDuration(StressWindow window) {
+  switch (window) {
+    case StressWindow.lastMinute:
+      return const Duration(minutes: 1);
+    case StressWindow.last5Minutes:
+      return const Duration(minutes: 5);
+    case StressWindow.last15Minutes:
+      return const Duration(minutes: 15);
+    case StressWindow.allData:
+      return null;
+  }
+}
+
+StressSummary? analyzeStressSamples(
+  List<StressSample> samples,
+  StressWindow window, {
+  DateTime? now,
+}) {
+  final effectiveNow = now ?? DateTime.now();
+  final duration = stressWindowDuration(window);
+  final filtered = samples.where((sample) {
+    if (!sample.fingerOnSensor) return false;
+    if (duration == null) return true;
+    return sample.timestamp.isAfter(effectiveNow.subtract(duration));
+  }).toList()
+    ..sort((left, right) => left.timestamp.compareTo(right.timestamp));
+
+  if (filtered.isEmpty) {
+    return null;
+  }
+
+  final sampleCount = filtered.length;
+  final averageBpm = filtered.map((sample) => sample.bpm).reduce((a, b) => a + b) /
+      sampleCount;
+  final averageStress = filtered.map((sample) => sample.stress).reduce((a, b) => a + b) /
+      sampleCount;
+  final minStress = filtered.map((sample) => sample.stress).reduce((a, b) => a < b ? a : b);
+  final maxStress = filtered.map((sample) => sample.stress).reduce((a, b) => a > b ? a : b);
+
+  final firstHalfSize = (sampleCount / 2).ceil();
+  final firstHalfAverage = filtered
+          .take(firstHalfSize)
+          .map((sample) => sample.stress)
+          .reduce((a, b) => a + b) /
+      firstHalfSize;
+  final secondHalfSamples = filtered.skip(sampleCount - firstHalfSize).toList();
+  final secondHalfAverage = secondHalfSamples
+          .map((sample) => sample.stress)
+          .reduce((a, b) => a + b) /
+      secondHalfSamples.length;
+  final delta = secondHalfAverage - firstHalfAverage;
+
+  final trend = delta > 3
+      ? 'Rising'
+      : delta < -3
+          ? 'Improving'
+          : 'Stable';
+
+  return StressSummary(
+    window: window,
+    sampleCount: sampleCount,
+    averageBpm: averageBpm,
+    averageStress: averageStress,
+    minStress: minStress,
+    maxStress: maxStress,
+    trend: trend,
+  );
+}
+
 void main() => runApp(const HRVApp());
 
 class HRVApp extends StatelessWidget {
@@ -24,13 +147,14 @@ class HRVScreen extends StatefulWidget {
 
 class _HRVScreenState extends State<HRVScreen> {
   BluetoothDevice?         _device;
-  BluetoothCharacteristic? _char;
   int    _bpm       = 0;
   int    _stress    = 0;
   String _state     = 'UNKNOWN';
   bool   _connected = false;
   bool   _finger    = false;
   String _buffer    = '';
+  final List<StressSample> _samples = [];
+  StressWindow _selectedWindow = StressWindow.last5Minutes;
 
   @override
   void initState() {
@@ -72,7 +196,6 @@ class _HRVScreenState extends State<HRVScreen> {
       if (s.uuid.toString().toUpperCase().contains('FFE0')) {
         for (BluetoothCharacteristic c in s.characteristics) {
           if (c.uuid.toString().toUpperCase().contains('FFE1')) {
-            _char = c;
             await c.setNotifyValue(true);
             c.onValueReceived.listen(_onData);
             debugPrint('HM-10 FFE1 characteristic subscribed');
@@ -105,16 +228,34 @@ class _HRVScreenState extends State<HRVScreen> {
     final finger = parts[2].trim() == '1';
 
     String state;
-    if      (stress > 70) state = 'HIGH STRESS';
-    else if (stress > 40) state = 'MEDIUM';
-    else if (stress > 20) state = 'RELAXED';
-    else                  state = 'VERY RELAXED';
+    if      (stress > 70) {
+      state = 'HIGH STRESS';
+    } else if (stress > 40) {
+      state = 'MEDIUM';
+    } else if (stress > 20) {
+      state = 'RELAXED';
+    } else {
+      state = 'VERY RELAXED';
+    }
+
+    final sample = StressSample(
+      timestamp: DateTime.now(),
+      bpm: bpm,
+      stress: stress,
+      fingerOnSensor: finger,
+    );
 
     setState(() {
       _bpm    = bpm;
       _stress = stress;
       _state  = state;
       _finger = finger;
+      if (finger) {
+        _samples.add(sample);
+        if (_samples.length > 2000) {
+          _samples.removeAt(0);
+        }
+      }
     });
   }
 
@@ -181,7 +322,7 @@ class _HRVScreenState extends State<HRVScreen> {
               padding: const EdgeInsets.all(12),
               margin: const EdgeInsets.only(bottom: 16),
               decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.2),
+                color: Colors.orange.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: Colors.orange),
               ),
@@ -213,6 +354,123 @@ class _HRVScreenState extends State<HRVScreen> {
             value: _finger ? '$_stress' : '--',
             unit: '/ 100',
             color: _stressColor(),
+          ),
+          const SizedBox(height: 16),
+
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1E1E),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'STRESS ANALYSIS',
+                  style: TextStyle(
+                    color: Colors.grey,
+                    fontSize: 12,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: StressWindow.values.map((window) {
+                    final selected = _selectedWindow == window;
+                    return ChoiceChip(
+                      label: Text(stressWindowLabel(window)),
+                      selected: selected,
+                      onSelected: (_) {
+                        setState(() => _selectedWindow = window);
+                      },
+                      selectedColor: Colors.cyanAccent.withValues(alpha: 0.18),
+                      labelStyle: TextStyle(
+                        color: selected ? Colors.cyanAccent : Colors.white70,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      backgroundColor: const Color(0xFF2A2A2A),
+                      side: BorderSide(
+                        color: selected ? Colors.cyanAccent : Colors.transparent,
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+                Builder(
+                  builder: (context) {
+                    final summary = analyzeStressSamples(
+                      _samples,
+                      _selectedWindow,
+                    );
+
+                    if (summary == null) {
+                      return const Text(
+                        'No valid samples collected yet for the selected period.',
+                        style: TextStyle(color: Colors.white54, fontSize: 14),
+                      );
+                    }
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${summary.trend} over ${stressWindowLabel(summary.window)}',
+                          style: TextStyle(
+                            color: summary.trend == 'Improving'
+                                ? Colors.greenAccent
+                                : summary.trend == 'Rising'
+                                    ? Colors.orangeAccent
+                                    : Colors.cyanAccent,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _analysisStat(
+                                'Avg stress',
+                                summary.averageStress.toStringAsFixed(1),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _analysisStat(
+                                'Avg BPM',
+                                summary.averageBpm.toStringAsFixed(1),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _analysisStat(
+                                'Min / Max',
+                                '${summary.minStress} / ${summary.maxStress}',
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _analysisStat(
+                                'Samples',
+                                '${summary.sampleCount}',
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 16),
 
@@ -314,6 +572,34 @@ class _HRVScreenState extends State<HRVScreen> {
           Text(
             label,
             style: const TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _analysisStat(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF151515),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ],
       ),
