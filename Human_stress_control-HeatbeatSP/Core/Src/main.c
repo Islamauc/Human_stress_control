@@ -6,8 +6,11 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
+/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "max30102.h"
 #include "u8g2.h"
@@ -15,8 +18,16 @@
 #include "hrv.h"
 #include <stdio.h>
 #include <string.h>
+
+
 /* USER CODE END Includes */
 
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define BUZZER_FREQ(f)  do { \
     __HAL_TIM_SET_AUTORELOAD(&htim16, (80000000UL / (79+1)) / (f) - 1); \
@@ -39,16 +50,31 @@
 #define NOTE_A4_  466
 /* USER CODE END PD */
 
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c3;
 DMA_HandleTypeDef hdma_i2c1_rx;
+
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 TIM_HandleTypeDef htim16;
+
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE BEGIN PV */
 u8g2_t  u8g2;
 HRV_t   hrv;
@@ -104,6 +130,7 @@ static uint8_t  melody_playing   = 0;
 static uint32_t dbg_status_timer = 0;
 /* USER CODE END PV */
 
+/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
@@ -115,14 +142,19 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM16_Init(void);
+void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 uint8_t u8x8_byte_stm32_hw_i2c(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_gpio_delay_stm32(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void Breathing_Update(uint32_t now, uint8_t stress);
 void draw_breathing(u8g2_t *u8g2);
+void Task_FIFO(void *arg);      
+void Task_HRV(void *arg);       
+void Task_Display(void *arg);   
 /* USER CODE END PFP */
 
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #define FINGER_THRESHOLD 30000UL
 
@@ -204,12 +236,249 @@ void Music_Update(uint32_t now)
         if (freq == 0) { BUZZER_STOP(); } else { BUZZER_FREQ(freq); BUZZER_START(); }
     }
 }
+
+void Task_FIFO(void *arg)
+{
+    (void)arg;
+    for (;;)
+    {
+        uint32_t now = HAL_GetTick();
+        Music_Update(now);
+
+        uint8_t navail = MAX30102_SamplesAvailable(&hi2c1);
+        if (navail == 0xFF) DBG("!I2C ERR\r\n");
+        if (navail == 0) { dbg_fifo_empty++; }
+        else {
+            for (uint8_t s = 0; s < navail && s < 32; s++)
+            {
+                uint32_t r_v = 0, i_v = 0;
+                if (MAX30102_ReadRaw(&hi2c1, &r_v, &i_v) != HAL_OK) {
+                    dbg_fifo_errors++; break;
+                }
+                dbg_fifo_reads++;
+                last_ir = (int32_t)i_v;
+
+                if (i_v < 20000) {
+                    if (finger_detected == 1) {
+                        DBG("FINGER REMOVED\r\n");
+                        finger_detected = 0;
+                    }
+                } else {
+                    if (finger_detected == 0) {
+                        DBG("FINGER DETECTED\r\n");
+                        DBG("[ATTACH] raw_ir=%lu\r\n", (unsigned long)i_v);
+                        finger_detected   = 1;
+                        memset(&hrv, 0, sizeof(hrv));
+                        wave_idx          = 0;
+                        memset(wave_buf, 0, sizeof(wave_buf));
+                        recalibrate_peaks = 1;
+                        ppg_min = 0;
+                        ppg_max = 0;
+                        process_ppg_reset_filter();
+                        DBG("[FIX1] envelope reset\r\n");
+                    }
+                }
+
+                if (i_v < 1000 && (dbg_fifo_reads % 100 == 1)) DBG("!FINGER\r\n");
+								if (i_v < 1000) {
+										process_ppg_reset_filter();
+										recalibrate_peaks = 1;
+								}
+                int32_t flt = process_ppg_signal((int32_t)i_v);
+                flt = -flt;
+
+                if (recalibrate_peaks) {
+                    ppg_max = flt; ppg_min = flt;
+                    ppg_prev = flt; ppg_prev2 = flt;
+                    last_peak_ms = now;
+                    recalibrate_peaks = 0;
+                }
+
+                wave_buf[wave_idx % 128] = flt;
+                wave_idx++;
+
+                if (dbg_fifo_reads == 1) { ppg_max = flt; ppg_min = flt; }
+                if (flt > ppg_max) ppg_max = flt;
+                if (flt < ppg_min) ppg_min = flt;
+
+                if (dbg_fifo_reads % 100 == 0) {
+                    int32_t mid = (ppg_max + ppg_min) / 2;
+                    ppg_max = mid + ((ppg_max - mid) * 15) / 16;
+                    ppg_min = mid + ((ppg_min - mid) * 15) / 16;
+                }
+
+                int32_t range     = ppg_max - ppg_min;
+                int32_t threshold = ppg_min + (range * 7 / 10);
+
+                if (dbg_fifo_reads % 100 == 0)
+                    DBG("[ENV] reads=%lu flt=%ld min=%ld max=%ld range=%ld thr=%ld\r\n",
+                        (unsigned long)dbg_fifo_reads,
+                        (long)flt, (long)ppg_min, (long)ppg_max,
+                        (long)range, (long)threshold);
+
+                if (ppg_prev2 < ppg_prev &&
+                    ppg_prev  > flt       &&
+                    ppg_prev  > threshold &&
+                    ppg_prev  > 0         &&
+                    range     > 200)
+                {
+                    uint32_t gap_ms = now - last_peak_ms;
+                    DBG("[PEAK] gap=%lu ms prev=%ld thr=%ld range=%ld\r\n",
+                        (unsigned long)gap_ms, (long)ppg_prev,
+                        (long)threshold, (long)range);
+
+                    if (last_peak_ms == 0) {
+                        last_peak_ms = now;
+                    } else if (gap_ms >= 550 && gap_ms <= 2000) {
+                        if (finger_detected) {
+                            uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
+                            HRV_OnBeat(&hrv, ts);
+                            live_bpm = 60000UL / gap_ms;
+                            dbg_beat_count++;
+                            DBG("BEAT %u bpm\r\n", (unsigned int)(60000UL / gap_ms));
+                        }
+                        last_peak_ms = now;
+                    } else if (gap_ms > 2000) {
+                        last_peak_ms = now;
+                        DBG("[PEAK] anchor reset (gap too long)\r\n");
+                    } else {
+                        DBG("[PEAK] noise (%lu ms < 550)\r\n", (unsigned long)gap_ms);
+                    }
+                }
+
+                ppg_prev2 = ppg_prev;
+                ppg_prev  = flt;
+            }
+        }
+
+        if (navail >= 30) {
+            DBG("!FIFO OVF\r\n");
+            uint8_t zero = 0x00, dummy;
+            HAL_I2C_Mem_Read (&hi2c1, 0xAE, 0x00, 1, &dummy, 1, 10);
+            HAL_I2C_Mem_Read (&hi2c1, 0xAE, 0x01, 1, &dummy, 1, 10);
+            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x04, 1, &zero,  1, 10);
+            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x05, 1, &zero,  1, 10);
+            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x06, 1, &zero,  1, 10);
+            ppg_prev = 0; ppg_prev2 = 0;
+        }
+
+        osDelay(10);
+
+    }
+}
+
+void Task_HRV(void *arg)
+{
+    (void)arg;
+    for (;;)
+    {
+       osDelay(30000);
+
+        DBG("[HRV TRIGGER] buf_idx=%u valid=%u beats=%lu\r\n",
+            (unsigned int)hrv.buffer_idx,
+            (unsigned int)hrv.valid,
+            (unsigned long)dbg_beat_count);
+        HRV_Compute(&hrv);
+
+        if (hrv.valid) {
+            const char *lbl;
+            if      (hrv.stress_index > 70) lbl = "HIGH STRESS";
+            else if (hrv.stress_index > 40) lbl = "MEDIUM";
+            else if (hrv.stress_index > 20) lbl = "RELAXED";
+            else                            lbl = "VERY RELAXED";
+            DBG("\r\n--- BIOMETRIC STATUS ---\r\n");
+            DBG("HEART RATE: %u BPM\r\n", hrv.hr_bpm);
+            DBG("SDNN:       %u ms\r\n",  hrv.sdnn_ms);
+            DBG("RMSSD:      %u ms\r\n",  hrv.rmssd_ms);
+            DBG("STRESS:     %u/100\r\n", hrv.stress_index);
+            DBG("STATE:      %s\r\n",     lbl);
+            DBG("------------------------\r\n");
+            char ble_buf[48];
+            int  ble_len = snprintf(ble_buf, sizeof(ble_buf), "$HRV,%u,%u,%u\r\n",
+                                    hrv.hr_bpm, hrv.stress_index, (unsigned int)finger_detected);
+						__HAL_UART_CLEAR_FLAG(&huart1, UART_CLEAR_PEF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_OREF);
+
+							// Only transmit if the UART state is completely ready
+							if (huart1.gState == HAL_UART_STATE_READY) {
+									HAL_UART_Transmit(&huart1, (uint8_t*)ble_buf, ble_len, 10); // Dropped timeout to 10ms
+							}
+        } else {
+            DBG("CALCULATING... buf_idx=%u need 2\r\n", (unsigned int)hrv.buffer_idx);
+        }
+    }
+}
+
+void Task_Display(void *arg)
+{
+    (void)arg;
+    for (;;)
+    {
+        uint32_t now = HAL_GetTick();
+
+        if (!finger_detected) {
+            u8g2_ClearBuffer(&u8g2);
+            u8g2_SetFont(&u8g2, u8g2_font_ncenB10_tr);
+            u8g2_DrawStr(&u8g2, 15, 30, "PLACE FINGER");
+            u8g2_DrawFrame(&u8g2, 0, 0, 128, 64);
+            u8g2_SendBuffer(&u8g2);
+            if (melody_playing) Music_Stop();
+            prev_breath_state = BREATH_IDLE;
+        } else if (!hrv.valid) {
+            u8g2_ClearBuffer(&u8g2);
+            u8g2_SetFont(&u8g2, u8g2_font_ncenB08_tr);
+            u8g2_DrawStr(&u8g2, 15, 25, "ANALYZING...");
+            u8g2_DrawStr(&u8g2, 15, 45, "Keep Still...");
+            u8g2_SendBuffer(&u8g2);
+            if (melody_playing) Music_Stop();
+            prev_breath_state = BREATH_IDLE;
+        } else if (hrv.stress_index > 40) {
+            Breathing_Update(now, hrv.stress_index);
+            draw_breathing(&u8g2);
+            if (breath_state == BREATH_INHALE && prev_breath_state != BREATH_INHALE)
+                if (!melody_playing) Music_Start();
+            prev_breath_state = breath_state;
+				} else {
+						if (melody_playing) Music_Stop();
+						prev_breath_state = BREATH_IDLE;
+						static int32_t render[128];   
+						for (int i = 0; i < 128; i++) render[i] = wave_buf[(wave_idx + i) % 128];
+						display_update(&u8g2, hrv.hr_bpm, 98, hrv.stress_index, render);
+				}
+
+        osDelay(80);
+
+    }
+}
 /* USER CODE END 0 */
 
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
   SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_I2C1_Init();
@@ -220,7 +489,6 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM6_Init();
   MX_TIM16_Init();
-
   /* USER CODE BEGIN 2 */
   HAL_Delay(10);
   DBG("\r\n** BOOT **\r\n");
@@ -235,22 +503,7 @@ int main(void)
   stage("TIM2");
   if (HAL_TIM_Base_Start(&htim2) != HAL_OK) DBG("TIM2 FAIL\r\n");
 
-  /* FIX 3: TIM2 tick rate diagnosis
-   *
-   * Previous log showed: [TIM2] 1ms = 1261 ticks (expected 1000)
-   * This means TIM2 is running at 1.261 MHz, not 1 MHz.
-   *
-   * Cause: On STM32L4, APB1 timer clock can be 2x APB1 bus clock
-   * when APB1 prescaler != 1. With SYSCLK=80MHz, APB1CLKDivider=DIV1
-   * the APB1 timer clock = 80MHz. Prescaler=79 gives 80M/80 = 1MHz.
-   * BUT if the actual SYSCLK is higher (e.g. 100.8MHz from PLL
-   * rounding), prescaler=79 gives 100.8M/80 = 1.26MHz.
-   *
-   * We measure the actual tick rate across 10ms for accuracy,
-   * then compute the prescaler needed for exactly 1MHz.
-   * The corrected prescaler is written directly to TIM2->PSC
-   * and we force an update event so it takes effect immediately.
-   */
+
   {
       uint32_t t0 = __HAL_TIM_GET_COUNTER(&htim2);
       HAL_Delay(10);
@@ -261,10 +514,7 @@ int main(void)
           (unsigned long)ticks_per_10ms,
           (unsigned long)ticks_per_ms);
 
-      /* Compute the actual TIM2 input clock from the measured rate.
-       * TIM2 input clock = ticks_per_ms * 1000 * (prescaler+1)
-       * We want 1 tick/us = 1,000,000 ticks/s, so:
-       * new_prescaler = (actual_input_clock / 1,000,000) - 1         */
+
       uint32_t actual_input_clk = ticks_per_ms * 1000UL * (79 + 1);
       uint32_t new_psc = (actual_input_clk / 1000000UL) - 1;
       DBG("[TIM2] actual_input_clk=%lu Hz  new_psc=%lu\r\n",
@@ -307,203 +557,58 @@ int main(void)
   DBG("BUZZER OK\r\n");
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+
+  static const osThreadAttr_t fifo_attr  = { .name="FIFO", .stack_size=1024, .priority=osPriorityAboveNormal };
+  static const osThreadAttr_t hrv_attr   = { .name="HRV",  .stack_size=1024,  .priority=osPriorityNormal      };
+  static const osThreadAttr_t disp_attr  = { .name="DISP", .stack_size=1024, .priority=osPriorityBelowNormal };
+  osThreadNew(Task_FIFO,    NULL, &fifo_attr);
+  osThreadNew(Task_HRV,     NULL, &hrv_attr);
+  osThreadNew(Task_Display, NULL, &disp_attr);
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
   while (1)
   {
-    uint32_t now = HAL_GetTick();
-    Music_Update(now);
+    /* USER CODE END WHILE */
 
-    if (now - t_fifo >= 10)
-    {
-        t_fifo = now;
-
-        uint8_t navail = MAX30102_SamplesAvailable(&hi2c1);
-        if (navail == 0xFF) DBG("!I2C ERR\r\n");
-        if (navail == 0) { dbg_fifo_empty++; }
-        else {
-            for (uint8_t s = 0; s < navail && s < 32; s++)
-            {
-                uint32_t r_v = 0, i_v = 0;
-                if (MAX30102_ReadRaw(&hi2c1, &r_v, &i_v) != HAL_OK) {
-                    dbg_fifo_errors++; break;
-                }
-                dbg_fifo_reads++;
-                last_ir = (int32_t)i_v;
-
-                if (i_v < 20000) {
-                    if (finger_detected == 1) {
-                        DBG("FINGER REMOVED\r\n");
-                        finger_detected = 0;
-                    }
-                } else {
-                    if (finger_detected == 0) {
-                        DBG("FINGER DETECTED\r\n");
-                        DBG("[ATTACH] raw_ir=%lu\r\n", (unsigned long)i_v);
-                        finger_detected   = 1;
-                        memset(&hrv, 0, sizeof(hrv));
-                        wave_idx          = 0;
-                        memset(wave_buf, 0, sizeof(wave_buf));
-                        recalibrate_peaks = 1;
-
-                        /* Fix 1 (kept): reset envelope on attach */
-                        ppg_min = 0;
-                        ppg_max = 0;
-                        DBG("[FIX1] envelope reset\r\n");
-                    }
-                }
-
-                if (i_v < 1000 && (dbg_fifo_reads % 100 == 1)) DBG("!FINGER\r\n");
-
-                int32_t flt = process_ppg_signal((int32_t)i_v);
-                flt = -flt;
-
-                if (recalibrate_peaks) {
-                    ppg_max = flt; ppg_min = flt;
-                    ppg_prev = flt; ppg_prev2 = flt;
-                    last_peak_ms = now;
-                    recalibrate_peaks = 0;
-                }
-
-                wave_buf[wave_idx % 128] = flt;
-                wave_idx++;
-
-                if (dbg_fifo_reads == 1) { ppg_max = flt; ppg_min = flt; }
-                if (flt > ppg_max) ppg_max = flt;
-                if (flt < ppg_min) ppg_min = flt;
-
-                if (dbg_fifo_reads % 500 == 0) {
-                    int32_t mid = (ppg_max + ppg_min) / 2;
-                    ppg_max = mid + ((ppg_max - mid) * 15) / 16;
-                    ppg_min = mid + ((ppg_min - mid) * 15) / 16;
-                }
-
-                int32_t range     = ppg_max - ppg_min;
-                int32_t threshold = ppg_min + (range * 7 / 10);
-
-                /* ENV log every 100 samples — after fix2, range should be
-                 * ±few hundred by reads=200, not still in the thousands */
-                if (dbg_fifo_reads % 100 == 0)
-                    DBG("[ENV] reads=%lu flt=%ld min=%ld max=%ld range=%ld thr=%ld\r\n",
-                        (unsigned long)dbg_fifo_reads,
-                        (long)flt, (long)ppg_min, (long)ppg_max,
-                        (long)range, (long)threshold);
-
-                if (ppg_prev2 < ppg_prev &&
-                    ppg_prev  > flt       &&
-                    ppg_prev  > threshold &&
-                    ppg_prev  > 0         &&
-                    range     > 200)
-                {
-                    uint32_t gap_ms = now - last_peak_ms;
-                    DBG("[PEAK] gap=%lu ms prev=%ld thr=%ld range=%ld\r\n",
-                        (unsigned long)gap_ms, (long)ppg_prev,
-                        (long)threshold, (long)range);
-
-                    if (last_peak_ms == 0) {
-                        last_peak_ms = now;
-										} else if (gap_ms >= 550 && gap_ms <= 2000) {
-										if (finger_detected) {
-												uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
-												HRV_OnBeat(&hrv, ts);
-												live_bpm = 60000UL / gap_ms;
-												dbg_beat_count++;
-												DBG("BEAT %u bpm\r\n", (unsigned int)(60000UL / gap_ms));
-										}
-										last_peak_ms = now;
-                    } else if (gap_ms > 2000) {
-                        last_peak_ms = now;
-                        DBG("[PEAK] anchor reset (gap too long)\r\n");
-                    } else {
-                        DBG("[PEAK] noise (%lu ms < 550)\r\n", (unsigned long)gap_ms);
-                    }
-                }
-
-                ppg_prev2 = ppg_prev;
-                ppg_prev  = flt;
-            }
-        }
-
-        if (navail >= 30) {
-            DBG("!FIFO OVF\r\n");
-            uint8_t zero = 0x00, dummy;
-            HAL_I2C_Mem_Read (&hi2c1, 0xAE, 0x00, 1, &dummy, 1, 10);
-            HAL_I2C_Mem_Read (&hi2c1, 0xAE, 0x01, 1, &dummy, 1, 10);
-            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x04, 1, &zero,  1, 10);
-            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x05, 1, &zero,  1, 10);
-            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x06, 1, &zero,  1, 10);
-            ppg_prev = 0; ppg_prev2 = 0;
-        }
-    }
-
-    if (now - t_hrv >= 30000)
-    {
-        t_hrv = now;
-        DBG("[HRV TRIGGER] buf_idx=%u valid=%u beats=%lu\r\n",
-            (unsigned int)hrv.buffer_idx,
-            (unsigned int)hrv.valid,
-            (unsigned long)dbg_beat_count);
-        HRV_Compute(&hrv);
-
-        if (hrv.valid) {
-            const char *lbl;
-            if      (hrv.stress_index > 70) lbl = "HIGH STRESS";
-            else if (hrv.stress_index > 40) lbl = "MEDIUM";
-            else if (hrv.stress_index > 20) lbl = "RELAXED";
-            else                            lbl = "VERY RELAXED";
-            DBG("\r\n--- BIOMETRIC STATUS ---\r\n");
-            DBG("HEART RATE: %u BPM\r\n", hrv.hr_bpm);
-            DBG("SDNN:       %u ms\r\n",  hrv.sdnn_ms);
-            DBG("RMSSD:      %u ms\r\n",  hrv.rmssd_ms);
-            DBG("STRESS:     %u/100\r\n", hrv.stress_index);
-            DBG("STATE:      %s\r\n",     lbl);
-            DBG("------------------------\r\n");
-            char ble_buf[48];
-            int  ble_len = snprintf(ble_buf, sizeof(ble_buf), "$HRV,%u,%u,%u\r\n",
-                                    hrv.hr_bpm, hrv.stress_index, (unsigned int)finger_detected);
-            HAL_UART_Transmit(&huart1, (uint8_t*)ble_buf, ble_len, 100);
-        } else {
-            DBG("CALCULATING... buf_idx=%u need 2\r\n", (unsigned int)hrv.buffer_idx);
-        }
-    }
-
-    if (now - t_disp >= 80)
-    {
-        t_disp = now;
-        if (!finger_detected) {
-            u8g2_ClearBuffer(&u8g2);
-            u8g2_SetFont(&u8g2, u8g2_font_ncenB10_tr);
-            u8g2_DrawStr(&u8g2, 15, 30, "PLACE FINGER");
-            u8g2_DrawFrame(&u8g2, 0, 0, 128, 64);
-            u8g2_SendBuffer(&u8g2);
-            if (melody_playing) Music_Stop();
-            prev_breath_state = BREATH_IDLE;
-        } else if (!hrv.valid) {
-            u8g2_ClearBuffer(&u8g2);
-            u8g2_SetFont(&u8g2, u8g2_font_ncenB08_tr);
-            u8g2_DrawStr(&u8g2, 15, 25, "ANALYZING...");
-            u8g2_DrawStr(&u8g2, 15, 45, "Keep Still...");
-            u8g2_SendBuffer(&u8g2);
-            if (melody_playing) Music_Stop();
-            prev_breath_state = BREATH_IDLE;
-        } else if (hrv.stress_index > 40) {
-            Breathing_Update(now, hrv.stress_index);
-            draw_breathing(&u8g2);
-            if (breath_state == BREATH_INHALE && prev_breath_state != BREATH_INHALE)
-                if (!melody_playing) Music_Start();
-            prev_breath_state = breath_state;
-        } else {
-            if (melody_playing) Music_Stop();
-            prev_breath_state = BREATH_IDLE;
-            int32_t render[128];
-            for (int i = 0; i < 128; i++) render[i] = wave_buf[(wave_idx + i) % 128];
-            display_update(&u8g2, hrv.hr_bpm, 98, hrv.stress_index, render);
-        }
-    }
+    /* USER CODE BEGIN 3 */
   }
+  /* USER CODE END 3 */
 }
-
-/* Paste your original SystemClock_Config and MX_ functions here unchanged */
-
-
 
 /**
   * @brief System Clock Configuration
@@ -948,7 +1053,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
@@ -987,7 +1092,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(LD3_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
@@ -996,8 +1101,52 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    DBG("STACK OVERFLOW: %s\r\n", pcTaskName);
+    while(1) {}
+}
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM7 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM7)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.

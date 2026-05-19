@@ -1,7 +1,46 @@
 #include "hrv.h"
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+static uint8_t ppg_filter_reset = 0;
 
+void process_ppg_reset_filter(void)
+{
+    ppg_filter_reset = 1;
+}
+
+int32_t process_ppg_signal(int32_t x)
+{
+    static int32_t  xprev  = 0, yprev = 0;
+    static uint8_t  seeded = 0;
+    static uint32_t call_n = 0;
+    static int32_t  ma_buf[5] = {0};
+    static uint8_t  mi = 0;
+
+    call_n++;
+
+    if (ppg_filter_reset) {
+        xprev = x; yprev = 0; seeded = 1;
+        mi = 0; memset(ma_buf, 0, sizeof(ma_buf));
+        ppg_filter_reset = 0;
+    }
+
+    if (!seeded) { xprev = x; seeded = 1; }
+
+    int32_t dc_removed = x - xprev + (yprev * 995) / 1000;
+    xprev = x;
+    yprev = dc_removed;
+
+    ma_buf[mi % 5] = dc_removed;
+    mi++;
+    int32_t out = (ma_buf[0]+ma_buf[1]+ma_buf[2]+ma_buf[3]+ma_buf[4]) / 5;
+
+    if (call_n % 50 == 1)
+        DBG("[FILTER] n=%lu x=%ld hp=%ld out=%ld\r\n",
+            (unsigned long)call_n, (long)x, (long)dc_removed, (long)out);
+
+    return out;
+}
 static uint32_t isqrt(uint32_t n)
 {
     if (n == 0) return 0;
@@ -79,46 +118,52 @@ void HRV_Compute(HRV_t *h)
     uint8_t count = (h->buffer_idx < 30) ? (uint8_t)h->buffer_idx : 30;
     uint8_t start = (h->buffer_idx < 30) ? 0 : (h->buffer_idx % 30);
 
-    /* DBG-5: show exactly which slots and values Compute is reading */
     DBG("[COMPUTE] buf_idx=%u count=%u start=%u\r\n",
         (unsigned int)h->buffer_idx,
         (unsigned int)count,
         (unsigned int)start);
-    DBG("[COMPUTE] IBI values: ");
-    for (uint8_t i = 0; i < count; i++)
-        DBG("%lu ", (unsigned long)h->ibi_buffer[i]);
+        
+    DBG("[COMPUTE] IBI values (Ordered): ");
+    for (uint8_t i = 0; i < count; i++) {
+        DBG("%lu ", (unsigned long)h->ibi_buffer[(start + i) % 30]);
+    }
     DBG("\r\n");
 
-    /* --- original HR/SDNN code uses linear read ibi_buffer[i] --- */
+    // --- FIX 1: Read linearly via sliding window for Mean ---
     uint32_t sum = 0;
-    for (uint8_t i = 0; i < count; i++)
-        sum += h->ibi_buffer[i];
-    uint32_t mean = sum / count;
-    if (mean > 0)
+    for (uint8_t i = 0; i < count; i++) {
+        sum += h->ibi_buffer[(start + i) % 30];
+    }
+    
+    uint32_t mean = (count > 0) ? (sum / count) : 0;
+    if (mean > 0) {
         h->hr_bpm = (uint16_t)(60000UL / mean);
+    } else {
+        h->hr_bpm = 0;
+    }
 
     DBG("[COMPUTE] mean=%lu hr=%u bpm\r\n",
         (unsigned long)mean, (unsigned int)h->hr_bpm);
 
+    // --- FIX 2: Read linearly via sliding window for SDNN ---
     uint32_t var_sum = 0;
     for (uint8_t i = 0; i < count; i++)
     {
-        int32_t diff = (int32_t)h->ibi_buffer[i] - (int32_t)mean;
+        int32_t diff = (int32_t)h->ibi_buffer[(start + i) % 30] - (int32_t)mean;
         var_sum += (uint32_t)(diff * diff);
     }
-    h->sdnn_ms = isqrt(var_sum / count);
+    h->sdnn_ms = (count > 0) ? isqrt(var_sum / count) : 0;
 
     DBG("[COMPUTE] sdnn=%u ms\r\n", (unsigned int)h->sdnn_ms);
 
-    /* --- original RMSSD uses circular read --- */
+    // --- RMSSD (Correctly configured to read windows sequentially) ---
     uint32_t sq_sum = 0;
     uint8_t  pairs  = 0;
     for (uint8_t i = 0; i < count - 1; i++)
     {
         uint8_t idx_a = (start + i)     % 30;
         uint8_t idx_b = (start + i + 1) % 30;
-        int32_t d     = (int32_t)h->ibi_buffer[idx_b]
-                      - (int32_t)h->ibi_buffer[idx_a];
+        int32_t d     = (int32_t)h->ibi_buffer[idx_b] - (int32_t)h->ibi_buffer[idx_a];
         sq_sum += (uint32_t)(d * d);
         pairs++;
     }
@@ -129,42 +174,15 @@ void HRV_Compute(HRV_t *h)
         (unsigned int)pairs,
         (unsigned long)sq_sum);
 
-			if (h->rmssd_ms >= 150)
-					h->stress_index = 0;
-			else if (h->rmssd_ms <= 50)
-					h->stress_index = 100;
-			else {
-					uint32_t val = (uint32_t)((h->rmssd_ms - 50U) * 100U / 100U);
-					h->stress_index = (val >= 100) ? 0 : (uint8_t)(100U - val);
-			}
+    if (h->rmssd_ms >= 150) {
+        h->stress_index = 0;
+    } else if (h->rmssd_ms <= 50) {
+        h->stress_index = 100;
+    } else {
+        uint32_t val = (uint32_t)(h->rmssd_ms - 50U);
+        h->stress_index = (val >= 100) ? 0 : (uint8_t)(100U - val);
+    }
 
     DBG("[COMPUTE] stress=%u/100\r\n", (unsigned int)h->stress_index);
 }
 
-int32_t process_ppg_signal(int32_t x)
-{
-    static int32_t xprev  = 0, yprev = 0;
-    static uint8_t seeded = 0;
-    static uint32_t call_n = 0;
-    call_n++;
-
-    if (!seeded) { xprev = x; seeded = 1; }
-
-    int32_t dc_removed = x - xprev + (yprev * 995) / 1000;
-    xprev = x;
-    yprev = dc_removed;
-
-    static int32_t ma_buf[5] = {0};
-    static uint8_t mi = 0;
-    ma_buf[mi % 5] = dc_removed;
-    mi++;
-    int32_t out = (ma_buf[0] + ma_buf[1] + ma_buf[2] + ma_buf[3] + ma_buf[4]) / 5;
-
-    /* DBG-6: every 50 samples — watch 'hp' decay toward zero after finger attach.
-     * If hp is still in thousands after sample 500, alpha=0.995 is too slow. */
-    if (call_n % 50 == 1)
-        DBG("[FILTER] n=%lu x=%ld hp=%ld out=%ld\r\n",
-            (unsigned long)call_n, (long)x, (long)dc_removed, (long)out);
-
-    return out;
-}
