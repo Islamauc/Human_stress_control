@@ -1,9 +1,25 @@
+/* hrv.h */
 #ifndef HRV_H
 #define HRV_H
-
+ 
 #include <stdint.h>
 #include <stdbool.h>
+ 
+/* ---- Debug macro (define DBG in hrv.h or include your debug header) ---- */
+#ifndef DBG
+#include "main.h"   /* for huart2 */
+#include <stdio.h>
+extern UART_HandleTypeDef huart2;
 
+#define DBG(fmt, ...) \
+    do { \
+        char _b[96]; \
+        int  _n = snprintf(_b, sizeof(_b), fmt, ##__VA_ARGS__); \
+        HAL_UART_Transmit(&huart2, (uint8_t*)_b, (uint16_t)_n, 100); \
+    } while(0)
+#endif
+void process_ppg_reset_filter(void);
+int32_t process_ppg_signal(int32_t x);
 typedef struct {
     /* Basic Vitals */
     uint8_t  hr_bpm;          // Heart rate in beats per minute

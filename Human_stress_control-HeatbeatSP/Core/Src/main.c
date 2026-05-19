@@ -4,22 +4,10 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
   */
 /* USER CODE END Header */
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
-/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "max30102.h"
 #include "u8g2.h"
@@ -29,22 +17,14 @@
 #include <string.h>
 /* USER CODE END Includes */
 
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define BUZZER_FREQ(f)  do { \
     __HAL_TIM_SET_AUTORELOAD(&htim16, (80000000UL / (79+1)) / (f) - 1); \
     __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, \
     (__HAL_TIM_GET_AUTORELOAD(&htim16) + 1) / 2); \
 } while(0)
-
 #define BUZZER_STOP()   HAL_TIM_PWM_Stop(&htim16, TIM_CHANNEL_1)
 #define BUZZER_START()  HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1)
-// The musical notes
 #define NOTE_C4   262
 #define NOTE_D4   294
 #define NOTE_E4   330
@@ -55,25 +35,17 @@
 #define NOTE_C5   523
 #define NOTE_D5   587
 #define NOTE_E5   659
-#define NOTE_G4_  415  
-#define NOTE_A4_  466  
+#define NOTE_G4_  415
+#define NOTE_A4_  466
 /* USER CODE END PD */
 
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c3;
 DMA_HandleTypeDef hdma_i2c1_rx;
-
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 TIM_HandleTypeDef htim16;
-
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
@@ -81,13 +53,13 @@ UART_HandleTypeDef huart2;
 u8g2_t  u8g2;
 HRV_t   hrv;
 
-static uint32_t live_bpm = 0;
-static int32_t  ppg_prev      = 0;
-static int32_t  ppg_prev2     = 0;
-static uint32_t last_peak_ms  = 0;
-static int32_t  ppg_min       = 0;
-static int32_t  ppg_max       = 0;
-static uint8_t recalibrate_peaks = 0;
+static uint32_t live_bpm          = 0;
+static int32_t  ppg_prev          = 0;
+static int32_t  ppg_prev2         = 0;
+static uint32_t last_peak_ms      = 0;
+static int32_t  ppg_min           = 0;
+static int32_t  ppg_max           = 0;
+static uint8_t  recalibrate_peaks = 0;
 
 uint32_t t_fifo = 0;
 uint32_t t_hrv  = 0;
@@ -96,50 +68,42 @@ uint32_t t_disp = 0;
 int32_t  wave_buf[128] = {0};
 uint8_t  wave_idx      = 0;
 
-static uint32_t dbg_fifo_reads   = 0;
-static uint32_t dbg_fifo_empty   = 0;
-static uint32_t dbg_fifo_errors  = 0;
-static uint32_t dbg_beat_count   = 0;
-static uint32_t dbg_disp_count   = 0;
-static uint8_t  max_ok           = 0; 
-static int32_t  last_ir          = 0;
-typedef enum {
-    BREATH_IDLE = 0,
-    BREATH_INHALE,
-    BREATH_HOLD,
-    BREATH_EXHALE
-} BreathState_t;
+static uint32_t dbg_fifo_reads  = 0;
+static uint32_t dbg_fifo_empty  = 0;
+static uint32_t dbg_fifo_errors = 0;
+static uint32_t dbg_beat_count  = 0;
+static uint32_t dbg_disp_count  = 0;
+static uint8_t  max_ok          = 0;
+static int32_t  last_ir         = 0;
 
-static BreathState_t breath_state = BREATH_IDLE;
-
-static uint32_t breath_timer = 0;
-static uint8_t  breath_radius = 8;
-static uint8_t finger_detected = 0;
-
-static uint32_t buzzer_timer    = 0;
-static uint8_t  buzzer_active   = 0;
-static uint32_t buzzer_duration = 0;
+typedef enum { BREATH_IDLE=0, BREATH_INHALE, BREATH_HOLD, BREATH_EXHALE } BreathState_t;
+static BreathState_t breath_state      = BREATH_IDLE;
+static uint32_t      breath_timer      = 0;
+static uint8_t       breath_radius     = 8;
+static uint8_t       finger_detected   = 0;
+static uint32_t      buzzer_timer      = 0;
+static uint8_t       buzzer_active     = 0;
+static uint32_t      buzzer_duration   = 0;
 static BreathState_t prev_breath_state = BREATH_IDLE;
+
 static const uint16_t calm_melody[][2] = {
-    {NOTE_C4, 1200}, {NOTE_E4, 1200}, {NOTE_G4, 1200},
-    {NOTE_A4, 1600}, {0,        400}, 
-    {NOTE_G4, 1200}, {NOTE_E4, 1200}, {NOTE_D4, 1200},
-    {NOTE_C4, 2000}, {0,        600},
-    {NOTE_E4, 1200}, {NOTE_G4, 1200}, {NOTE_A4, 1200},
-    {NOTE_C5, 2000}, {0,        600},
-    {NOTE_A4, 1200}, {NOTE_G4, 1200}, {NOTE_E4, 1200},
-    {NOTE_C4, 2400}, {0,       1000}
+    {NOTE_C4,1200},{NOTE_E4,1200},{NOTE_G4,1200},
+    {NOTE_A4,1600},{0,400},
+    {NOTE_G4,1200},{NOTE_E4,1200},{NOTE_D4,1200},
+    {NOTE_C4,2000},{0,600},
+    {NOTE_E4,1200},{NOTE_G4,1200},{NOTE_A4,1200},
+    {NOTE_C5,2000},{0,600},
+    {NOTE_A4,1200},{NOTE_G4,1200},{NOTE_E4,1200},
+    {NOTE_C4,2400},{0,1000}
 };
-#define MELODY_LEN (sizeof(calm_melody) / sizeof(calm_melody[0]))
+#define MELODY_LEN (sizeof(calm_melody)/sizeof(calm_melody[0]))
 
 static uint8_t  melody_note_idx  = 0;
 static uint32_t melody_note_time = 0;
 static uint8_t  melody_playing   = 0;
 static uint32_t dbg_status_timer = 0;
-
 /* USER CODE END PV */
 
-/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
@@ -151,6 +115,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_TIM16_Init(void);
+
 /* USER CODE BEGIN PFP */
 uint8_t u8x8_byte_stm32_hw_i2c(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_gpio_delay_stm32(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
@@ -158,7 +123,6 @@ void Breathing_Update(uint32_t now, uint8_t stress);
 void draw_breathing(u8g2_t *u8g2);
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #define FINGER_THRESHOLD 30000UL
 #define DBG(fmt, ...) \
@@ -168,185 +132,89 @@ void draw_breathing(u8g2_t *u8g2);
         HAL_UART_Transmit(&huart2, (uint8_t*)_b, (uint16_t)_n, 100); \
     } while(0)
 
-static void stage(const char *name) {
-    DBG("> STG: %s\r\n", name);
-}
+static void stage(const char *name) { DBG("> STG: %s\r\n", name); }
 
 static void i2c_scan(I2C_HandleTypeDef *hi2c, const char *bus) {
     DBG("Scan %s:\r\n", bus);
     uint8_t found = 0;
     for (uint16_t addr = 1; addr < 128; addr++) {
-        if (HAL_I2C_IsDeviceReady(hi2c, (uint16_t)(addr << 1), 3, 5) == HAL_OK) {
-            DBG(" +0x%02X\r\n", addr);
-            found++;
+        if (HAL_I2C_IsDeviceReady(hi2c, (uint16_t)(addr<<1), 3, 5) == HAL_OK) {
+            DBG(" +0x%02X\r\n", addr); found++;
         }
     }
-    if (found == 0) DBG(" NONE\r\n");
+    if (!found) DBG(" NONE\r\n");
 }
 
 static void max30102_reg_dump(I2C_HandleTypeDef *hi2c) {
-    uint8_t regs[] = {0x00, 0x01, 0x04, 0x05, 0x06, 0x09, 0x0A, 0x0C, 0x0D, 0xFF};
+    uint8_t regs[] = {0x00,0x01,0x04,0x05,0x06,0x09,0x0A,0x0C,0x0D,0xFF};
     uint8_t val;
     DBG("REGS:\r\n");
-    for (uint8_t i = 0; i < 10; i++) {
+    for (uint8_t i = 0; i < 10; i++)
         if (HAL_I2C_Mem_Read(hi2c, 0xAE, regs[i], 1, &val, 1, 20) == HAL_OK)
             DBG(" %02X:%02X\r\n", regs[i], val);
-    }
 }
+
 void Breathing_Update(uint32_t now, uint8_t stress)
 {
-    if (stress < 70) {
-        breath_state = BREATH_IDLE;
-        breath_radius = 8;
-        return;
-    }
-
-    if (breath_state == BREATH_IDLE) {
-        breath_state = BREATH_INHALE;
-        breath_timer = now;
-    }
-
-    switch (breath_state)
-    {
+    if (stress < 70) { breath_state = BREATH_IDLE; breath_radius = 8; return; }
+    if (breath_state == BREATH_IDLE) { breath_state = BREATH_INHALE; breath_timer = now; }
+    switch (breath_state) {
         case BREATH_INHALE:
-
-            if (breath_radius < 24)
-                breath_radius++;
-
-            if (now - breath_timer >= 4000) {
-                breath_state = BREATH_HOLD;
-                breath_timer = now;
-            }
+            if (breath_radius < 24) breath_radius++;
+            if (now - breath_timer >= 4000) { breath_state = BREATH_HOLD; breath_timer = now; }
             break;
-
         case BREATH_HOLD:
-
-            if (now - breath_timer >= 2000) {
-                breath_state = BREATH_EXHALE;
-                breath_timer = now;
-            }
+            if (now - breath_timer >= 2000) { breath_state = BREATH_EXHALE; breath_timer = now; }
             break;
-
         case BREATH_EXHALE:
-
-            if (breath_radius > 8)
-                breath_radius--;
-
-            if (now - breath_timer >= 6000) {
-                breath_state = BREATH_INHALE;
-                breath_timer = now;
-            }
+            if (breath_radius > 8) breath_radius--;
+            if (now - breath_timer >= 6000) { breath_state = BREATH_INHALE; breath_timer = now; }
             break;
-
-        default:
-            break;
+        default: break;
     }
 }
 
 void draw_breathing(u8g2_t *u8g2)
 {
     u8g2_ClearBuffer(u8g2);
-
     u8g2_SetFont(u8g2, u8g2_font_ncenB08_tr);
-
-    switch (breath_state)
-    {
-        case BREATH_INHALE:
-            u8g2_DrawStr(u8g2, 34, 12, "INHALE");
-            break;
-
-        case BREATH_HOLD:
-            u8g2_DrawStr(u8g2, 42, 12, "HOLD");
-            break;
-
-        case BREATH_EXHALE:
-            u8g2_DrawStr(u8g2, 34, 12, "EXHALE");
-            break;
-
-        default:
-            break;
+    switch (breath_state) {
+        case BREATH_INHALE: u8g2_DrawStr(u8g2, 34, 12, "INHALE"); break;
+        case BREATH_HOLD:   u8g2_DrawStr(u8g2, 42, 12, "HOLD");   break;
+        case BREATH_EXHALE: u8g2_DrawStr(u8g2, 34, 12, "EXHALE"); break;
+        default: break;
     }
-
     u8g2_DrawCircle(u8g2, 64, 40, breath_radius, U8G2_DRAW_ALL);
-
     u8g2_SendBuffer(u8g2);
 }
+
 static uint32_t last_read_count = 0;
 static uint32_t last_read_time  = 0;
 
 void Music_Start(void)
 {
-    melody_playing   = 1;
-    melody_note_idx  = 0;
-    melody_note_time = HAL_GetTick();
-
-    if (calm_melody[0][0] == 0) {
-        BUZZER_STOP();
-    } else {
-        BUZZER_FREQ(calm_melody[0][0]);
-        BUZZER_START();
-    }
+    melody_playing = 1; melody_note_idx = 0; melody_note_time = HAL_GetTick();
+    if (calm_melody[0][0] == 0) { BUZZER_STOP(); }
+    else { BUZZER_FREQ(calm_melody[0][0]); BUZZER_START(); }
     DBG("MUSIC START\r\n");
 }
-
-void Music_Stop(void)
-{
-    melody_playing = 0;
-    BUZZER_STOP();
-    DBG("MUSIC STOP\r\n");
-}
-
+void Music_Stop(void)  { melody_playing = 0; BUZZER_STOP(); DBG("MUSIC STOP\r\n"); }
 void Music_Update(uint32_t now)
 {
     if (!melody_playing) return;
-
-    uint32_t duration = calm_melody[melody_note_idx][1];
-
-    if (now - melody_note_time >= duration)
-    {
-        melody_note_idx = (melody_note_idx + 1) % MELODY_LEN;
+    if (now - melody_note_time >= calm_melody[melody_note_idx][1]) {
+        melody_note_idx  = (melody_note_idx + 1) % MELODY_LEN;
         melody_note_time = now;
-
         uint16_t freq = calm_melody[melody_note_idx][0];
-
-        if (freq == 0) {
-            BUZZER_STOP();  
-        } else {
-            BUZZER_FREQ(freq);
-            BUZZER_START();
-        }
+        if (freq == 0) { BUZZER_STOP(); } else { BUZZER_FREQ(freq); BUZZER_START(); }
     }
 }
 /* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
-
-  /* USER CODE BEGIN 1 */
-	
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
-
-  /* USER CODE BEGIN Init */
-	
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
   SystemClock_Config();
-
-  /* USER CODE BEGIN SysInit */
-	
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_I2C1_Init();
@@ -357,38 +225,73 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM6_Init();
   MX_TIM16_Init();
+
   /* USER CODE BEGIN 2 */
   HAL_Delay(10);
-
   DBG("\r\n** BOOT **\r\n");
   DBG("CLK: %uHz\r\n", (unsigned int)SystemCoreClock);
 
   stage("LED");
-  for (int i = 0; i < 6; i++) {
-      HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-      HAL_Delay(100);
-  }
+  for (int i = 0; i < 6; i++) { HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin); HAL_Delay(100); }
 
-  stage("I2C3");
-  i2c_scan(&hi2c3, "I2C3");
-
-  stage("I2C1");
-  i2c_scan(&hi2c1, "I2C1");
+  stage("I2C3"); i2c_scan(&hi2c3, "I2C3");
+  stage("I2C1"); i2c_scan(&hi2c1, "I2C1");
 
   stage("TIM2");
-  if (HAL_TIM_Base_Start(&htim2) != HAL_OK) {
-      DBG("TIM2 FAIL\r\n");
+  if (HAL_TIM_Base_Start(&htim2) != HAL_OK) DBG("TIM2 FAIL\r\n");
+
+  /* FIX 3: TIM2 tick rate diagnosis
+   *
+   * Previous log showed: [TIM2] 1ms = 1261 ticks (expected 1000)
+   * This means TIM2 is running at 1.261 MHz, not 1 MHz.
+   *
+   * Cause: On STM32L4, APB1 timer clock can be 2x APB1 bus clock
+   * when APB1 prescaler != 1. With SYSCLK=80MHz, APB1CLKDivider=DIV1
+   * the APB1 timer clock = 80MHz. Prescaler=79 gives 80M/80 = 1MHz.
+   * BUT if the actual SYSCLK is higher (e.g. 100.8MHz from PLL
+   * rounding), prescaler=79 gives 100.8M/80 = 1.26MHz.
+   *
+   * We measure the actual tick rate across 10ms for accuracy,
+   * then compute the prescaler needed for exactly 1MHz.
+   * The corrected prescaler is written directly to TIM2->PSC
+   * and we force an update event so it takes effect immediately.
+   */
+  {
+      uint32_t t0 = __HAL_TIM_GET_COUNTER(&htim2);
+      HAL_Delay(10);
+      uint32_t t1 = __HAL_TIM_GET_COUNTER(&htim2);
+      uint32_t ticks_per_10ms = t1 - t0;
+      uint32_t ticks_per_ms   = ticks_per_10ms / 10;
+      DBG("[TIM2] 10ms = %lu ticks -> %lu ticks/ms (expect 1000)\r\n",
+          (unsigned long)ticks_per_10ms,
+          (unsigned long)ticks_per_ms);
+
+      /* Compute the actual TIM2 input clock from the measured rate.
+       * TIM2 input clock = ticks_per_ms * 1000 * (prescaler+1)
+       * We want 1 tick/us = 1,000,000 ticks/s, so:
+       * new_prescaler = (actual_input_clock / 1,000,000) - 1         */
+      uint32_t actual_input_clk = ticks_per_ms * 1000UL * (79 + 1);
+      uint32_t new_psc = (actual_input_clk / 1000000UL) - 1;
+      DBG("[TIM2] actual_input_clk=%lu Hz  new_psc=%lu\r\n",
+          (unsigned long)actual_input_clk,
+          (unsigned long)new_psc);
+
+      /* Apply the corrected prescaler at runtime */
+      __HAL_TIM_SET_PRESCALER(&htim2, new_psc);
+      /* Force update so PSC takes effect immediately */
+      htim2.Instance->EGR = TIM_EGR_UG;
+
+      /* Verify */
+      t0 = __HAL_TIM_GET_COUNTER(&htim2);
+      HAL_Delay(1);
+      t1 = __HAL_TIM_GET_COUNTER(&htim2);
+      DBG("[TIM2] after fix: 1ms = %lu ticks (expect ~1000)\r\n",
+          (unsigned long)(t1 - t0));
   }
 
   stage("MAX30102");
-  if (MAX30102_Init(&hi2c1) != HAL_OK) {
-      DBG("MAX FAIL\r\n");
-      max_ok = 0;
-  } else {
-      DBG("MAX OK\r\n");
-      max_ok = 1;
-      max30102_reg_dump(&hi2c1);
-  }
+  if (MAX30102_Init(&hi2c1) != HAL_OK) { DBG("MAX FAIL\r\n"); max_ok = 0; }
+  else { DBG("MAX OK\r\n"); max_ok = 1; max30102_reg_dump(&hi2c1); }
 
   stage("OLED");
   u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0, u8x8_byte_stm32_hw_i2c, u8x8_gpio_delay_stm32);
@@ -402,37 +305,31 @@ int main(void)
 
   stage("HRV");
   memset(&hrv, 0, sizeof(hrv));
-	
-		stage("TIM16 PWM");
-		HAL_TIM_Base_Start(&htim16);
-		BUZZER_STOP();
-		DBG("BUZZER OK\r\n");
+
+  stage("TIM16 PWM");
+  HAL_TIM_Base_Start(&htim16);
+  BUZZER_STOP();
+  DBG("BUZZER OK\r\n");
   /* USER CODE END 2 */
 
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
   while (1)
   {
-
     uint32_t now = HAL_GetTick();
-		Music_Update(now);
+    Music_Update(now);
+
     if (now - t_fifo >= 10)
     {
         t_fifo = now;
 
         uint8_t navail = MAX30102_SamplesAvailable(&hi2c1);
-        if (navail == 0xFF) {
-            DBG("!I2C ERR - bus reset\r\n");
-        }
-        if (navail == 0) {
-            dbg_fifo_empty++;
-        } else {
+        if (navail == 0xFF) DBG("!I2C ERR\r\n");
+        if (navail == 0) { dbg_fifo_empty++; }
+        else {
             for (uint8_t s = 0; s < navail && s < 32; s++)
             {
                 uint32_t r_v = 0, i_v = 0;
                 if (MAX30102_ReadRaw(&hi2c1, &r_v, &i_v) != HAL_OK) {
-                    dbg_fifo_errors++;
-                    break;
+                    dbg_fifo_errors++; break;
                 }
                 dbg_fifo_reads++;
                 last_ir = (int32_t)i_v;
@@ -444,29 +341,33 @@ int main(void)
                     }
                 } else {
                     if (finger_detected == 0) {
-                        DBG("FINGER DETECTED - Resetting HRV\r\n");
-                        finger_detected = 1;
+                        DBG("FINGER DETECTED\r\n");
+                        DBG("[ATTACH] raw_ir=%lu\r\n", (unsigned long)i_v);
+                        finger_detected   = 1;
                         memset(&hrv, 0, sizeof(hrv));
-                        wave_idx = 0;
+                        wave_idx          = 0;
                         memset(wave_buf, 0, sizeof(wave_buf));
-											  recalibrate_peaks = 1;
+                        recalibrate_peaks = 1;
+
+                        /* Fix 1 (kept): reset envelope on attach */
+                        ppg_min = 0;
+                        ppg_max = 0;
+                        DBG("[FIX1] envelope reset\r\n");
                     }
                 }
-
 
                 if (i_v < 1000 && (dbg_fifo_reads % 100 == 1)) DBG("!FINGER\r\n");
 
                 int32_t flt = process_ppg_signal((int32_t)i_v);
                 flt = -flt;
-								
-								if (recalibrate_peaks) {
-									ppg_max = flt;
-									ppg_min = flt;
-									ppg_prev = flt;
-									ppg_prev2 = flt;
-									last_peak_ms = now;
-									recalibrate_peaks = 0; 
-							}
+
+                if (recalibrate_peaks) {
+                    ppg_max = flt; ppg_min = flt;
+                    ppg_prev = flt; ppg_prev2 = flt;
+                    last_peak_ms = now;
+                    recalibrate_peaks = 0;
+                }
+
                 wave_buf[wave_idx % 128] = flt;
                 wave_idx++;
 
@@ -483,6 +384,14 @@ int main(void)
                 int32_t range     = ppg_max - ppg_min;
                 int32_t threshold = ppg_min + (range * 7 / 10);
 
+                /* ENV log every 100 samples — after fix2, range should be
+                 * ±few hundred by reads=200, not still in the thousands */
+                if (dbg_fifo_reads % 100 == 0)
+                    DBG("[ENV] reads=%lu flt=%ld min=%ld max=%ld range=%ld thr=%ld\r\n",
+                        (unsigned long)dbg_fifo_reads,
+                        (long)flt, (long)ppg_min, (long)ppg_max,
+                        (long)range, (long)threshold);
+
                 if (ppg_prev2 < ppg_prev &&
                     ppg_prev  > flt       &&
                     ppg_prev  > threshold &&
@@ -490,18 +399,26 @@ int main(void)
                     range     > 200)
                 {
                     uint32_t gap_ms = now - last_peak_ms;
+                    DBG("[PEAK] gap=%lu ms prev=%ld thr=%ld range=%ld\r\n",
+                        (unsigned long)gap_ms, (long)ppg_prev,
+                        (long)threshold, (long)range);
 
                     if (last_peak_ms == 0) {
                         last_peak_ms = now;
-                    } else if (gap_ms >= 550 && gap_ms <= 2000) {
-                        uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
-                        HRV_OnBeat(&hrv, ts);
+										} else if (gap_ms >= 550 && gap_ms <= 2000) {
+										if (finger_detected) {
+												uint32_t ts = __HAL_TIM_GET_COUNTER(&htim2);
+												HRV_OnBeat(&hrv, ts);
 												live_bpm = 60000UL / gap_ms;
-                        dbg_beat_count++;
-                        DBG("BEAT %u bpm\r\n", (unsigned int)(60000UL / gap_ms));
-                        last_peak_ms = now;
+												dbg_beat_count++;
+												DBG("BEAT %u bpm\r\n", (unsigned int)(60000UL / gap_ms));
+										}
+										last_peak_ms = now;
                     } else if (gap_ms > 2000) {
                         last_peak_ms = now;
+                        DBG("[PEAK] anchor reset (gap too long)\r\n");
+                    } else {
+                        DBG("[PEAK] noise (%lu ms < 550)\r\n", (unsigned long)gap_ms);
                     }
                 }
 
@@ -511,109 +428,87 @@ int main(void)
         }
 
         if (navail >= 30) {
-            DBG("!FIFO OVF - Hard Reset Logic\r\n");
-
-            uint8_t zero = 0x00;
-            uint8_t dummy;
-
-            HAL_I2C_Mem_Read(&hi2c1, 0xAE, 0x00, 1, &dummy, 1, 10);
-            HAL_I2C_Mem_Read(&hi2c1, 0xAE, 0x01, 1, &dummy, 1, 10);
-
-            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x04, 1, &zero, 1, 10);
-            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x05, 1, &zero, 1, 10);
-            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x06, 1, &zero, 1, 10);
-
-            ppg_prev  = 0;
-            ppg_prev2 = 0;
+            DBG("!FIFO OVF\r\n");
+            uint8_t zero = 0x00, dummy;
+            HAL_I2C_Mem_Read (&hi2c1, 0xAE, 0x00, 1, &dummy, 1, 10);
+            HAL_I2C_Mem_Read (&hi2c1, 0xAE, 0x01, 1, &dummy, 1, 10);
+            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x04, 1, &zero,  1, 10);
+            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x05, 1, &zero,  1, 10);
+            HAL_I2C_Mem_Write(&hi2c1, 0xAE, 0x06, 1, &zero,  1, 10);
+            ppg_prev = 0; ppg_prev2 = 0;
         }
     }
 
     if (now - t_hrv >= 30000)
     {
         t_hrv = now;
+        DBG("[HRV TRIGGER] buf_idx=%u valid=%u beats=%lu\r\n",
+            (unsigned int)hrv.buffer_idx,
+            (unsigned int)hrv.valid,
+            (unsigned long)dbg_beat_count);
         HRV_Compute(&hrv);
 
         if (hrv.valid) {
-            const char* status_label;
-
-            if (hrv.stress_index > 70)      status_label = "HIGH STRESS";
-            else if (hrv.stress_index > 40) status_label = "MEDIUM";
-            else if (hrv.stress_index > 20) status_label = "RELAXED";
-            else                            status_label = "VERY RELAXED";
-
+            const char *lbl;
+            if      (hrv.stress_index > 70) lbl = "HIGH STRESS";
+            else if (hrv.stress_index > 40) lbl = "MEDIUM";
+            else if (hrv.stress_index > 20) lbl = "RELAXED";
+            else                            lbl = "VERY RELAXED";
             DBG("\r\n--- BIOMETRIC STATUS ---\r\n");
-            DBG("MAX30102: %s\r\n", max_ok ? "OK" : "ERROR");
             DBG("HEART RATE: %u BPM\r\n", hrv.hr_bpm);
+            DBG("SDNN:       %u ms\r\n",  hrv.sdnn_ms);
+            DBG("RMSSD:      %u ms\r\n",  hrv.rmssd_ms);
             DBG("STRESS:     %u/100\r\n", hrv.stress_index);
-            DBG("STATE:      %s\r\n", status_label);
+            DBG("STATE:      %s\r\n",     lbl);
             DBG("------------------------\r\n");
-					char ble_buf[48];
-					int  ble_len = snprintf(ble_buf, sizeof(ble_buf),
-                            "$HRV,%u,%u,%u\r\n",
-                            hrv.hr_bpm,
-                            hrv.stress_index,
-                            (unsigned int)finger_detected);
-					HAL_UART_Transmit(&huart1, (uint8_t*)ble_buf, ble_len, 100);
-					DBG("BLE SENT: $HRV,%u,%u,%u\r\n", hrv.hr_bpm, hrv.stress_index, (unsigned int)finger_detected);
+            char ble_buf[48];
+            int  ble_len = snprintf(ble_buf, sizeof(ble_buf), "$HRV,%u,%u,%u\r\n",
+                                    hrv.hr_bpm, hrv.stress_index, (unsigned int)finger_detected);
+            HAL_UART_Transmit(&huart1, (uint8_t*)ble_buf, ble_len, 100);
         } else {
-            DBG("CALCULATING... (Need more beats)\r\n");
+            DBG("CALCULATING... buf_idx=%u need 2\r\n", (unsigned int)hrv.buffer_idx);
         }
     }
 
-if (now - t_disp >= 80)
+    if (now - t_disp >= 80)
     {
         t_disp = now;
-                        
-        if (!finger_detected)
-        {
+        if (!finger_detected) {
             u8g2_ClearBuffer(&u8g2);
             u8g2_SetFont(&u8g2, u8g2_font_ncenB10_tr);
             u8g2_DrawStr(&u8g2, 15, 30, "PLACE FINGER");
             u8g2_DrawFrame(&u8g2, 0, 0, 128, 64);
             u8g2_SendBuffer(&u8g2);
-            
             if (melody_playing) Music_Stop();
             prev_breath_state = BREATH_IDLE;
-        }
-        else if (!hrv.valid)
-        {
+        } else if (!hrv.valid) {
             u8g2_ClearBuffer(&u8g2);
             u8g2_SetFont(&u8g2, u8g2_font_ncenB08_tr);
             u8g2_DrawStr(&u8g2, 15, 25, "ANALYZING...");
             u8g2_DrawStr(&u8g2, 15, 45, "Keep Still...");
             u8g2_SendBuffer(&u8g2);
-            
             if (melody_playing) Music_Stop();
             prev_breath_state = BREATH_IDLE;
-        }
-        else if (hrv.stress_index > 70)
-        {
+        } else if (hrv.stress_index > 70) {
             Breathing_Update(now, hrv.stress_index);
             draw_breathing(&u8g2);
-            if (breath_state == BREATH_INHALE && prev_breath_state != BREATH_INHALE) {
+            if (breath_state == BREATH_INHALE && prev_breath_state != BREATH_INHALE)
                 if (!melody_playing) Music_Start();
-            }
             prev_breath_state = breath_state;
-        }
-        else
-        {
+        } else {
             if (melody_playing) Music_Stop();
             prev_breath_state = BREATH_IDLE;
-            
             int32_t render[128];
-            for (int i = 0; i < 128; i++)
-                render[i] = wave_buf[(wave_idx + i) % 128];
-
-            display_update(&u8g2,
-                           hrv.hr_bpm,
-                           98,
-                           hrv.stress_index,
-                           render);
+            for (int i = 0; i < 128; i++) render[i] = wave_buf[(wave_idx + i) % 128];
+            display_update(&u8g2, hrv.hr_bpm, 98, hrv.stress_index, render);
         }
     }
-  /* USER CODE END 3 */
-	}
+  }
 }
+
+/* Paste your original SystemClock_Config and MX_ functions here unchanged */
+
+
 
 /**
   * @brief System Clock Configuration
