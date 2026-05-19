@@ -151,7 +151,7 @@ static void max30102_reg_dump(I2C_HandleTypeDef *hi2c) {
 
 void Breathing_Update(uint32_t now, uint8_t stress)
 {
-    if (stress < 70) { breath_state = BREATH_IDLE; breath_radius = 8; return; }
+    if (stress < 40) { breath_state = BREATH_IDLE; breath_radius = 8; return; }
     if (breath_state == BREATH_IDLE) { breath_state = BREATH_INHALE; breath_timer = now; }
     switch (breath_state) {
         case BREATH_INHALE:
@@ -484,7 +484,7 @@ int main(void)
             u8g2_SendBuffer(&u8g2);
             if (melody_playing) Music_Stop();
             prev_breath_state = BREATH_IDLE;
-        } else if (hrv.stress_index > 70) {
+        } else if (hrv.stress_index > 40) {
             Breathing_Update(now, hrv.stress_index);
             draw_breathing(&u8g2);
             if (breath_state == BREATH_INHALE && prev_breath_state != BREATH_INHALE)
