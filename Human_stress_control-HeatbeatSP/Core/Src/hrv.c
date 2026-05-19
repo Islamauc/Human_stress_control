@@ -129,13 +129,14 @@ void HRV_Compute(HRV_t *h)
         (unsigned int)pairs,
         (unsigned long)sq_sum);
 
-    /* --- original stress formula --- */
-    if (h->rmssd_ms >= 100)
-        h->stress_index = 0;
-    else if (h->rmssd_ms <= 15)
-        h->stress_index = 100;
-    else
-        h->stress_index = (uint8_t)(100U - ((h->rmssd_ms - 15U) * 100U / 85U));
+			if (h->rmssd_ms >= 150)
+					h->stress_index = 0;
+			else if (h->rmssd_ms <= 50)
+					h->stress_index = 100;
+			else {
+					uint32_t val = (uint32_t)((h->rmssd_ms - 50U) * 100U / 100U);
+					h->stress_index = (val >= 100) ? 0 : (uint8_t)(100U - val);
+			}
 
     DBG("[COMPUTE] stress=%u/100\r\n", (unsigned int)h->stress_index);
 }

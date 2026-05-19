@@ -125,12 +125,7 @@ void draw_breathing(u8g2_t *u8g2);
 
 /* USER CODE BEGIN 0 */
 #define FINGER_THRESHOLD 30000UL
-#define DBG(fmt, ...) \
-    do { \
-        char _b[80]; \
-        int  _n = snprintf(_b, sizeof(_b), fmt, ##__VA_ARGS__); \
-        HAL_UART_Transmit(&huart2, (uint8_t*)_b, (uint16_t)_n, 100); \
-    } while(0)
+
 
 static void stage(const char *name) { DBG("> STG: %s\r\n", name); }
 
