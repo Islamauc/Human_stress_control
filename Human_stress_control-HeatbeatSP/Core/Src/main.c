@@ -370,6 +370,9 @@ void Task_FIFO(void *arg)
 void Task_HRV(void *arg)
 {
     (void)arg;
+    
+    osDelay(5000); // wait for first beats
+;
     for (;;)
     {
        osDelay(30000);
@@ -393,18 +396,18 @@ void Task_HRV(void *arg)
             DBG("STRESS:     %u/100\r\n", hrv.stress_index);
             DBG("STATE:      %s\r\n",     lbl);
             DBG("------------------------\r\n");
-            char ble_buf[48];
-            int  ble_len = snprintf(ble_buf, sizeof(ble_buf), "$HRV,%u,%u,%u\r\n",
-                                    hrv.hr_bpm, hrv.stress_index, (unsigned int)finger_detected);
-						__HAL_UART_CLEAR_FLAG(&huart1, UART_CLEAR_PEF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_OREF);
+						char ble_buf[48];
+						int  ble_len = snprintf(ble_buf, sizeof(ble_buf), "$HRV,%u,%u,%u\r\n",
+																		hrv.hr_bpm, hrv.stress_index, (unsigned int)finger_detected);
 
-							// Only transmit if the UART state is completely ready
-							if (huart1.gState == HAL_UART_STATE_READY) {
-									HAL_UART_Transmit(&huart1, (uint8_t*)ble_buf, ble_len, 10); // Dropped timeout to 10ms
-							}
+						taskENTER_CRITICAL();
+						HAL_UART_Transmit(&huart1, (uint8_t*)ble_buf, ble_len, 500);
+						taskEXIT_CRITICAL();
         } else {
             DBG("CALCULATING... buf_idx=%u need 2\r\n", (unsigned int)hrv.buffer_idx);
         }
+				        osDelay(5000); // send every 5s instead of 30s
+
     }
 }
 
